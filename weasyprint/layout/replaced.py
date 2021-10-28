@@ -8,6 +8,7 @@
 
 """
 
+from . import LayoutProgress
 from .min_max import handle_min_max_height, handle_min_max_width
 from .percent import percentage
 
@@ -294,7 +295,7 @@ def block_replaced_box_layout(context, box, containing_block):
     adjoining_margins = []
     collapsing_through = False
     out_of_flow_resume_at = None
-    return (
+    return LayoutProgress(
         box, resume_at, out_of_flow_resume_at, next_page, adjoining_margins,
         collapsing_through)
 

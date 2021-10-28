@@ -203,22 +203,22 @@ def absolute_block(context, box, containing_block, fixed_boxes):
     if box.is_table_wrapper:
         table_wrapper_width(context, box, (cb_width, cb_height))
 
-    new_box, _, _, _, _, _ = block_container_layout(
+    progress = block_container_layout(
         context, box, max_position_y=float('inf'), skip_stack=None,
         page_is_empty=False, absolute_boxes=absolute_boxes,
         fixed_boxes=fixed_boxes, adjoining_margins=None, discard=False)
 
     for child_placeholder in absolute_boxes:
-        absolute_layout(context, child_placeholder, new_box, fixed_boxes)
+        absolute_layout(context, child_placeholder, progress.box, fixed_boxes)
 
     if translate_box_width:
-        translate_x -= new_box.width
+        translate_x -= progress.box.width
     if translate_box_height:
-        translate_y -= new_box.height
+        translate_y -= progress.box.height
 
-    new_box.translate(translate_x, translate_y)
+    progress.box.translate(translate_x, translate_y)
 
-    return new_box
+    return progress.box
 
 
 def absolute_flex(context, box, containing_block_sizes, fixed_boxes,
@@ -241,22 +241,22 @@ def absolute_flex(context, box, containing_block_sizes, fixed_boxes,
     if box.is_table_wrapper:
         table_wrapper_width(context, box, (cb_width, cb_height))
 
-    new_box, _, _, _, _ = flex_layout(
+    progress = flex_layout(
         context, box, max_position_y=float('inf'), skip_stack=None,
         containing_block=containing_block, page_is_empty=False,
         absolute_boxes=absolute_boxes, fixed_boxes=fixed_boxes)
 
     for child_placeholder in absolute_boxes:
-        absolute_layout(context, child_placeholder, new_box, fixed_boxes)
+        absolute_layout(context, child_placeholder, progress.box, fixed_boxes)
 
     if translate_box_width:
-        translate_x -= new_box.width
+        translate_x -= progress.box.width
     if translate_box_height:
-        translate_y -= new_box.height
+        translate_y -= progress.box.height
 
-    new_box.translate(translate_x, translate_y)
+    progress.box.translate(translate_x, translate_y)
 
-    return new_box
+    return progress.box
 
 
 def absolute_layout(context, placeholder, containing_block, fixed_boxes):

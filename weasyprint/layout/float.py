@@ -63,18 +63,20 @@ def float_layout(context, box, containing_block, absolute_boxes, fixed_boxes,
     if isinstance(box, boxes.BlockContainerBox):
         context.create_block_formatting_context()
         # TODO: handle out_of_flow_resume_at
-        box, resume_at, _, _, _, _ = block_container_layout(
+        progress = block_container_layout(
             context, box, max_position_y=max_position_y,
             skip_stack=skip_stack, page_is_empty=False,
             absolute_boxes=absolute_boxes, fixed_boxes=fixed_boxes,
             adjoining_margins=None, discard=False)
         context.finish_block_formatting_context(box)
+        box, resume_at = progress.box, progress.resume_at
     elif isinstance(box, boxes.FlexContainerBox):
-        box, resume_at, _, _, _ = flex_layout(
+        progress = flex_layout(
             context, box, max_position_y=max_position_y,
             skip_stack=skip_stack, containing_block=containing_block,
             page_is_empty=False, absolute_boxes=absolute_boxes,
             fixed_boxes=fixed_boxes)
+        box, resume_at = progress.box, progress.resume_at
     else:
         assert isinstance(box, boxes.BlockReplacedBox)
         resume_at = None

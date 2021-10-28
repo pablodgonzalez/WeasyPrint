@@ -8,6 +8,7 @@
 
 from math import floor
 
+from . import LayoutProgress
 from .absolute import absolute_layout
 from .percent import resolve_percentages
 
@@ -120,14 +121,15 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
             resolve_percentages(block, containing_block)
             block.position_x = box.content_box_x()
             block.position_y = current_position_y
-            new_child, _, _, _, adjoining_margins, _ = block_level_layout(
+            progress = block_level_layout(
                 context, block, original_max_position_y, skip_stack,
                 containing_block, page_is_empty, absolute_boxes, fixed_boxes,
                 adjoining_margins, discard=False)
-            new_children.append(new_child)
+            new_children.append(progress.box)
             current_position_y = (
-                new_child.border_height() + new_child.border_box_y())
-            adjoining_margins.append(new_child.margin_bottom)
+                progress.box.border_height() + progress.box.border_box_y())
+            adjoining_margins = progress.adjoining_margins
+            adjoining_margins.append(progress.box.margin_bottom)
             continue
 
         excluded_shapes = context.excluded_shapes[:]
@@ -139,10 +141,10 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
         current_position_y += collapse_margin(adjoining_margins)
         adjoining_margins = []
         column_box = create_column_box(column_children)
-        new_child, _, _, _, _, _ = block_box_layout(
+        progress = block_box_layout(
             context, column_box, float('inf'), skip_stack, containing_block,
             page_is_empty, [], [], [], discard=False)
-        height = new_child.margin_height()
+        height = progress.box.margin_height()
         if style['column_fill'] == 'balance':
             height /= count
 
@@ -160,20 +162,19 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
             for i in range(count):
                 # Render the column
                 # TODO: handle out_of_flow_resume_at
-                (new_box, resume_at, out_of_flow_resume_at, next_page, _,
-                 _) = block_box_layout(
+                progress = block_box_layout(
                     context, column_box, box.content_box_y() + height,
                     column_skip_stack, containing_block, page_is_empty,
                     [], [], [], discard=False)
-                if new_box is None:
+                if progress.box is None:
                     # We didn't render anything. Give up and use the max
                     # content height.
                     height *= count
                     continue
-                column_skip_stack = resume_at
+                column_skip_stack = progress.resume_at
 
                 in_flow_children = [
-                    child for child in new_box.children
+                    child for child in progress.box.children
                     if child.is_in_normal_flow()]
 
                 if in_flow_children:
@@ -183,10 +184,10 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
                         in_flow_children[-1].margin_height())
 
                     # Get the minimum size needed to render the next box
-                    next_box, _, _, _, _, _ = block_box_layout(
+                    next_box = block_box_layout(
                         context, column_box, box.content_box_y(),
                         column_skip_stack, containing_block, True, [], [], [],
-                        discard=False)
+                        discard=False).box
                     for child in next_box.children:
                         if child.is_in_normal_flow():
                             next_box_size = child.margin_height()
@@ -210,7 +211,7 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
                     lost_space = min(lost_space, next_box_size - empty_space)
 
                 # Stop if we already rendered the whole content
-                if resume_at is None:
+                if progress.resume_at is None:
                     break
 
             if column_skip_stack is None:
@@ -245,19 +246,17 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
             else:
                 column_box.position_x += i * (width + style['column_gap'])
             # TODO: handle out_of_flow_resume_at
-            (new_child, column_skip_stack, column_out_of_flow_resume_at,
-             column_next_page, _, _) = (
-                block_box_layout(
-                    context, column_box, max_position_y, skip_stack,
-                    containing_block, page_is_empty, absolute_boxes,
-                    fixed_boxes, None, discard=False))
-            if new_child is None:
+            progress = block_box_layout(
+                context, column_box, max_position_y, skip_stack,
+                containing_block, page_is_empty, absolute_boxes, fixed_boxes,
+                adjoining_margins=None, discard=False)
+            if progress.box is None:
                 break
-            next_page = column_next_page
-            skip_stack = column_skip_stack
-            columns.append(new_child)
+            next_page = progress.next_page
+            skip_stack = progress.resume_at
+            columns.append(progress.box)
             max_column_height = max(
-                max_column_height, new_child.margin_height())
+                max_column_height, progress.box.margin_height())
             if skip_stack is None:
                 break
             i += 1
@@ -273,12 +272,9 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
             column.height = max_column_height
             new_children.append(column)
 
-    out_of_flow_resume_at = None
     if box.children and not new_children:
         # The box has children but none can be drawn, let's skip the whole box
-        return (
-            None, (0, None), out_of_flow_resume_at,
-            {'break': 'any', 'page': None}, [], False)
+        return LayoutProgress(resume_at=(0, None))
 
     # Set the height of box and the columns
     box.children = new_children
@@ -303,4 +299,6 @@ def columns_layout(context, box, max_position_y, skip_stack, containing_block,
         for absolute_box in absolute_boxes:
             absolute_layout(context, absolute_box, box, fixed_boxes)
 
-    return box, skip_stack, out_of_flow_resume_at, next_page, [], False
+    # TODO: handle out_of_flow_resume_at
+    out_of_flow_resume_at = None
+    return LayoutProgress(box, skip_stack, out_of_flow_resume_at, next_page)

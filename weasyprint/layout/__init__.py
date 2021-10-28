@@ -20,9 +20,6 @@ from functools import partial
 
 from ..formatting_structure import boxes
 from ..logger import PROGRESS_LOGGER
-from .absolute import absolute_box_layout, absolute_layout
-from .background import layout_backgrounds
-from .page import make_all_pages, make_margin_boxes
 
 
 def initialize_page_maker(context, root_box):
@@ -79,6 +76,8 @@ def initialize_page_maker(context, root_box):
 
 def layout_fixed_boxes(context, pages, containing_page):
     """Lay out and yield fixed boxes of ``pages`` on ``containing_page``."""
+    from .absolute import absolute_box_layout, absolute_layout
+
     for page in pages:
         for box in page.fixed_boxes:
             # As replaced boxes are never copied during layout, ensure that we
@@ -111,6 +110,9 @@ def layout_document(html, root_box, context, max_loops=8):
     :returns: a list of laid out Page objects.
 
     """
+    from .background import layout_backgrounds
+    from .page import make_all_pages, make_margin_boxes
+
     initialize_page_maker(context, root_box)
     pages = []
     actual_total_pages = 0
@@ -305,3 +307,15 @@ class LayoutContext:
         for previous_page in range(self.current_page - 1, 0, -1):
             if previous_page in store[name]:
                 return store[name][previous_page][-1]
+
+
+class LayoutProgress:
+    def __init__(self, box=None, resume_at=None, out_of_flow_resume_at=None,
+                 next_page=None, adjoining_margins=None,
+                 collapsing_through=False):
+        self.box = box
+        self.resume_at = resume_at
+        self.out_of_flow_resume_at = out_of_flow_resume_at
+        self.next_page = next_page or {'break': 'any', 'page': None}
+        self.adjoining_margins = adjoining_margins or []
+        self.collapsing_through = collapsing_through

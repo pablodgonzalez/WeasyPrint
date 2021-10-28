@@ -9,6 +9,7 @@
 from itertools import chain
 
 from ..formatting_structure import boxes
+from . import LayoutProgress
 from .absolute import AbsolutePlaceholder, absolute_layout
 from .column import columns_layout
 from .flex import flex_layout
@@ -84,40 +85,39 @@ def block_box_layout(context, box, max_position_y, skip_stack,
     """Lay out the block ``box``."""
     if (box.style['column_width'] != 'auto' or
             box.style['column_count'] != 'auto'):
-        result = columns_layout(
+        progress = columns_layout(
             context, box, max_position_y, skip_stack, containing_block,
             page_is_empty, absolute_boxes, fixed_boxes, adjoining_margins)
-        resume_at = result[1]
         # TODO: this condition and the whole relayout are probably wrong
-        if resume_at is None:
-            new_box = result[0]
+        if progress.resume_at is None:
             bottom_spacing = (
-                new_box.margin_bottom + new_box.padding_bottom +
-                new_box.border_bottom_width)
+                progress.box.margin_bottom + progress.box.padding_bottom +
+                progress.box.border_bottom_width)
             if bottom_spacing:
                 max_position_y -= bottom_spacing
-                result = columns_layout(
+                progress = columns_layout(
                     context, box, max_position_y, skip_stack,
                     containing_block, page_is_empty, absolute_boxes,
                     fixed_boxes, adjoining_margins)
-        return result
+        return progress
     elif box.is_table_wrapper:
         table_wrapper_width(
             context, box, (containing_block.width, containing_block.height))
     block_level_width(box, containing_block)
 
-    result = block_container_layout(
+    progress = block_container_layout(
         context, box, max_position_y, skip_stack, page_is_empty,
         absolute_boxes, fixed_boxes, adjoining_margins, discard)
-    new_box = result[0]
-    if new_box and new_box.is_table_wrapper:
+    progress.box = progress.box
+    if progress.box and progress.box.is_table_wrapper:
         # Don't collide with floats
         # http://www.w3.org/TR/CSS21/visuren.html#floats
         position_x, position_y, _ = avoid_collisions(
-            context, new_box, containing_block, outer=False)
-        new_box.translate(
-            position_x - new_box.position_x, position_y - new_box.position_y)
-    return result
+            context, progress.box, containing_block, outer=False)
+        progress.box.translate(
+            position_x - progress.box.position_x,
+            position_y - progress.box.position_y)
+    return progress
 
 
 @handle_min_max_width
@@ -412,11 +412,11 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
 
     if not getattr(child, 'first_letter_style', None):
         child.first_letter_style = first_letter_style
-    (new_child, resume_at, out_of_flow_resume_at, next_page,
-     next_adjoining_margins, collapsing_through) = block_level_layout(
+    progress = block_level_layout(
          context, child, max_position_y, skip_stack, new_containing_block,
          page_is_empty_with_no_children, absolute_boxes, fixed_boxes,
          adjoining_margins, discard)
+    new_child, resume_at = progress.box, progress.resume_at
     skip_stack = None
 
     if new_child is not None:
@@ -434,10 +434,10 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
             adjoining_margins = []
         # else: blocks handle that themselves.
 
-        adjoining_margins = next_adjoining_margins
+        adjoining_margins = progress.adjoining_margins
         adjoining_margins.append(new_child.margin_bottom)
 
-        if not collapsing_through:
+        if not progress.collapsing_through:
             new_position_y = (
                 new_child.border_box_y() + new_child.border_height())
 
@@ -464,7 +464,7 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
                 stop = True
                 return (
                     abort, stop, resume_at, position_y, adjoining_margins,
-                    next_page, new_children)
+                    progress.next_page, new_children)
             else:
                 # We did not find any page break opportunity
                 if not page_is_empty:
@@ -474,7 +474,7 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
                     abort = True
                     return (
                         abort, stop, resume_at, position_y, adjoining_margins,
-                        next_page, new_children)
+                        progress.next_page, new_children)
                 # else:
                 # ignore this 'avoid' and break anyway.
 
@@ -492,8 +492,8 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
             # This was the first child of this box, cancel the box completly
             abort = True
         return (
-            abort, stop, resume_at, position_y, adjoining_margins, next_page,
-            new_children)
+            abort, stop, resume_at, position_y, adjoining_margins,
+            progress.next_page, new_children)
 
     new_children.append(new_child)
     if resume_at is not None:
@@ -501,8 +501,8 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
         stop = True
 
     return (
-        abort, stop, resume_at, position_y, adjoining_margins, next_page,
-        new_children)
+        abort, stop, resume_at, position_y, adjoining_margins,
+        progress.next_page, new_children)
 
 
 def block_container_layout(context, box, max_position_y, skip_stack,
@@ -620,7 +620,7 @@ def block_container_layout(context, box, max_position_y, skip_stack,
 
         if abort:
             page = child.page_values()[0]
-            return None, None, None, {'break': 'any', 'page': page}, [], False
+            return LayoutProgress(next_page={'break': 'any', 'page': page})
         elif stop:
             break
 
@@ -631,8 +631,7 @@ def block_container_layout(context, box, max_position_y, skip_stack,
     if (box_is_fragmented and
             box.style['break_inside'] in ('avoid', 'avoid-page') and
             not page_is_empty):
-        return (
-            None, None, None, {'break': 'any', 'page': None}, [], False)
+        return LayoutProgress()
 
     if collapsing_with_children:
         box.position_y += (
@@ -717,7 +716,7 @@ def block_container_layout(context, box, max_position_y, skip_stack,
     if next_page['page'] is None:
         next_page['page'] = new_box.page_values()[1]
 
-    return (
+    return LayoutProgress(
         new_box, resume_at, out_of_flow_resume_at, next_page,
         adjoining_margins, collapsing_through)
 

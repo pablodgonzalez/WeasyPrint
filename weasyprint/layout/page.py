@@ -434,31 +434,29 @@ def make_margin_boxes(context, page, state):
 
 def margin_box_content_layout(context, page, box):
     """Layout a margin box’s content once the box has dimensions."""
-    (box, resume_at, out_of_flow_resume_at, next_page, _,
-     _) = block_container_layout(
-        context, box,
-        max_position_y=float('inf'), skip_stack=None,
+    progress = block_container_layout(
+        context, box, max_position_y=float('inf'), skip_stack=None,
         page_is_empty=True, absolute_boxes=[], fixed_boxes=[],
         adjoining_margins=None, discard=False)
-    assert resume_at is None
-    assert out_of_flow_resume_at is None
+    assert progress.resume_at is None
+    assert progress.out_of_flow_resume_at is None
 
-    vertical_align = box.style['vertical_align']
+    vertical_align = progress.box.style['vertical_align']
     # Every other value is read as 'top', ie. no change.
-    if vertical_align in ('middle', 'bottom') and box.children:
-        first_child = box.children[0]
-        last_child = box.children[-1]
+    if vertical_align in ('middle', 'bottom') and progress.box.children:
+        first_child = progress.box.children[0]
+        last_child = progress.box.children[-1]
         top = first_child.position_y
         # Not always exact because floating point errors
-        # assert top == box.content_box_y()
+        # assert top == progress.box.content_box_y()
         bottom = last_child.position_y + last_child.margin_height()
         content_height = bottom - top
-        offset = box.height - content_height
+        offset = progress.box.height - content_height
         if vertical_align == 'middle':
             offset /= 2
-        for child in box.children:
+        for child in progress.box.children:
             child.translate(0, offset)
-    return box
+    return progress.box
 
 
 def page_width_or_height(box, containing_block_size):
@@ -537,7 +535,6 @@ def make_page(context, root_box, page_type, resume_at, page_number,
     initial_containing_block = page
 
     if page_type.blank:
-        previous_resume_at = resume_at
         root_box = root_box.copy_with_children([])
 
     # TODO: handle cases where the root element is something else.
@@ -548,11 +545,12 @@ def make_page(context, root_box, page_type, resume_at, page_number,
     page_is_empty = True
     adjoining_margins = []
     positioned_boxes = []  # Mixed absolute and fixed
-    (root_box, resume_at, out_of_flow_resume_at, next_page, _,
-     _) = block_level_layout(
+    progress = block_level_layout(
         context, root_box, page_content_bottom, resume_at,
         initial_containing_block, page_is_empty, positioned_boxes,
         positioned_boxes, adjoining_margins, discard=False)
+    root_box = progress.box
+    # (root_box, resume_at)
     assert root_box
 
     page.fixed_boxes = [
@@ -667,10 +665,10 @@ def make_page(context, root_box, page_type, resume_at, page_number,
                 remake_state['content_changed'] = True
                 counter_lookup.parse_again(page_counter_values)
 
-    if page_type.blank:
-        resume_at = previous_resume_at
+    if not page_type.blank:
+        resume_at = progress.resume_at
 
-    return page, resume_at, next_page
+    return page, resume_at, progress.next_page
 
 
 def set_page_type_computed_styles(page_type, html, style_for):

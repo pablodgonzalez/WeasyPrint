@@ -402,12 +402,12 @@ def inline_block_box_layout(context, box, position_x, skip_stack,
 
     box.position_x = position_x
     box.position_y = 0
-    box, _, _, _, _, _ = block_container_layout(
+    progress = block_container_layout(
         context, box, max_position_y=float('inf'), skip_stack=skip_stack,
         page_is_empty=True, absolute_boxes=absolute_boxes,
         fixed_boxes=fixed_boxes, adjoining_margins=None, discard=False)
-    box.baseline = inline_block_baseline(box)
-    return box
+    progress.box.baseline = inline_block_baseline(progress.box)
+    return progress.box
 
 
 def inline_block_baseline(box):
@@ -511,9 +511,10 @@ def split_inline_level(context, box, position_x, max_x, skip_stack,
         for side in ['top', 'right', 'bottom', 'left']:
             if getattr(box, f'margin_{side}') == 'auto':
                 setattr(box, f'margin_{side}', 0)
-        new_box, resume_at, _, _, _ = flex_layout(
+        progress = flex_layout(
             context, box, float('inf'), skip_stack, containing_block,
             False, absolute_boxes, fixed_boxes)
+        new_box, resume_at = progress.box, progress.resume_at
         preserved_line_break = False
         first_letter = '\u2e80'
         last_letter = '\u2e80'
@@ -609,17 +610,17 @@ def _break_waiting_children(context, box, max_x, initial_skip_stack,
                 # actual size by 1 and render the waiting child again with this
                 # constraint. We may find a better way.
                 max_x = child.position_x + child.margin_width() - 1
-                new_child, child_resume_at, _, _, _, _ = split_inline_level(
+                progress = split_inline_level(
                     context, child, child.position_x, max_x, None, box,
                     absolute_boxes, fixed_boxes, line_placeholders,
                     waiting_floats, line_children, max_position_y)
 
                 children.extend(waiting_children_copy)
-                if new_child is None:
+                if progress.box is None:
                     # May be None where we have an empty TextBox.
                     assert isinstance(child, boxes.TextBox)
                 else:
-                    children.append((child_index, new_child))
+                    children.append((child_index, progress.box))
 
                 # As this child has already been broken following the original
                 # skip stack, we have to add the original skip stack to the
@@ -638,12 +639,12 @@ def _break_waiting_children(context, box, max_x, initial_skip_stack,
                 else:
                     (initial_index, current_skip_stack), = (
                         initial_skip_stack.items())
-                # child_resume_at is an absolute skip stack
+                # progress.resume_at is an absolute skip stack
                 if child_index > initial_index:
-                    return {child_index: child_resume_at}
+                    return {child_index: progress.resume_at}
 
                 # combine the stacks
-                current_resume_at = child_resume_at
+                current_resume_at = progress.resume_at
                 stack = []
                 while current_skip_stack and current_resume_at:
                     (skip, current_skip_stack), = current_skip_stack.items()

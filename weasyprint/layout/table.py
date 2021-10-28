@@ -8,6 +8,7 @@
 
 from ..formatting_structure import boxes
 from ..logger import LOGGER
+from . import LayoutProgress
 from .percent import resolve_one_percentage, resolve_percentages
 from .preferred import max_content_width, table_and_columns_preferred_widths
 
@@ -141,12 +142,12 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
                 # The computed height is a minimum
                 cell.computed_height = cell.height
                 cell.height = 'auto'
-                cell, _, _, _, _, _ = block_container_layout(
+                cell = block_container_layout(
                     context, cell, max_position_y=float('inf'),
                     skip_stack=None, page_is_empty=False,
                     absolute_boxes=absolute_boxes,
                     fixed_boxes=fixed_boxes, adjoining_margins=None,
-                    discard=False)
+                    discard=False).box
                 cell.empty = not any(
                     child.is_floated() or child.is_in_normal_flow()
                     for child in cell.children)
@@ -471,7 +472,7 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
         table = None
         adjoining_margins = []
         collapsing_through = False
-        return (
+        return LayoutProgress(
             table, resume_at, out_of_flow_resume_at, next_page,
             adjoining_margins, collapsing_through)
 
@@ -524,7 +525,7 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
         resume_at = None
     adjoining_margins = []
     collapsing_through = False
-    return (
+    return LayoutProgress(
         table, resume_at, out_of_flow_resume_at, next_page, adjoining_margins,
         collapsing_through)
 
