@@ -12,6 +12,7 @@ from ..css import computed_from_cascaded
 from ..css.computed_values import ex_ratio, strut_layout
 from ..formatting_structure import boxes
 from ..text.line_break import can_break_text, create_layout, split_first_line
+from . import LayoutProgress
 from .absolute import AbsolutePlaceholder, absolute_layout
 from .flex import flex_layout
 from .float import avoid_collisions, float_layout
@@ -24,25 +25,25 @@ from .replaced import inline_replaced_box_layout
 from .table import find_in_flow_baseline, table_wrapper_width
 
 
-def iter_line_boxes(context, box, position_y, skip_stack, containing_block,
-                    absolute_boxes, fixed_boxes, first_letter_style,
-                    max_position_y):
+def iter_line_boxes(context, containing_block, position_y, first_letter_style,
+                    progress):
     """Return an iterator of ``(line, resume_at)``.
 
     ``line`` is a laid-out LineBox with as much content as possible that
     fits in the available width.
 
     """
-    resolve_percentages(box, containing_block)
-    if skip_stack is None:
+    resolve_percentages(progress.box, containing_block)
+    if progress.resume_at is None:
         # TODO: wrong, see https://github.com/Kozea/WeasyPrint/issues/679
-        resolve_one_percentage(box, 'text_indent', containing_block.width)
+        resolve_one_percentage(
+            progress.box, 'text_indent', containing_block.width)
     else:
-        box.text_indent = 0
+        progress.box.text_indent = 0
     while True:
         line, resume_at = get_next_linebox(
-            context, box, position_y, skip_stack, containing_block,
-            absolute_boxes, fixed_boxes, first_letter_style, max_position_y)
+            context, containing_block, position_y, first_letter_style,
+            progress)
         if line:
             handle_leader(context, line, containing_block)
             position_y = line.position_y + line.height
@@ -51,56 +52,52 @@ def iter_line_boxes(context, box, position_y, skip_stack, containing_block,
         yield line, resume_at
         if resume_at is None:
             return
-        skip_stack = resume_at
-        box.text_indent = 0
+        progress.resume_at = resume_at
+        progress.box.text_indent = 0
         first_letter_style = None
 
 
-def get_next_linebox(context, linebox, position_y, skip_stack,
-                     containing_block, absolute_boxes, fixed_boxes,
-                     first_letter_style, max_position_y):
+def get_next_linebox(context, containing_block, position_y, first_letter_style,
+                     progress):
     """Return ``(line, resume_at)``."""
-    skip_stack = skip_first_whitespace(linebox, skip_stack)
+    skip_stack = skip_first_whitespace(progress.box, progress.resume_at)
     if skip_stack == 'continue':
         return None, None
 
-    skip_stack = first_letter_to_box(linebox, skip_stack, first_letter_style)
+    progress.resume_at = first_letter_to_box(
+        progress.box, skip_stack, first_letter_style)
 
-    linebox.position_y = position_y
+    progress.box.position_y = position_y
 
     if context.excluded_shapes:
         # Width and height must be calculated to avoid floats
-        linebox.width = inline_min_content_width(
-            context, linebox, skip_stack=skip_stack, first_line=True)
-        linebox.height, _ = strut_layout(linebox.style, context)
+        progress.box.width = inline_min_content_width(
+            context, progress.box, skip_stack=skip_stack, first_line=True)
+        progress.box.height, _ = strut_layout(progress.box.style, context)
     else:
         # No float, width and height will be set by the lines
-        linebox.width = linebox.height = 0
+        progress.box.width = progress.box.height = 0
     position_x, position_y, available_width = avoid_collisions(
-        context, linebox, containing_block, outer=False)
+        context, progress.box, containing_block, outer=False)
 
-    candidate_height = linebox.height
+    candidate_height = progress.box.height
 
     excluded_shapes = context.excluded_shapes.copy()
 
     while True:
-        original_position_x = linebox.position_x = position_x
-        original_position_y = linebox.position_y = position_y
-        original_width = linebox.width
+        original_position_x = progress.box.position_x = position_x
+        original_position_y = progress.box.position_y = position_y
+        original_width = progress.box.width
         max_x = position_x + available_width
-        position_x += linebox.text_indent
+        position_x += progress.box.text_indent
 
-        line_placeholders = []
-        line_absolutes = []
-        line_fixed = []
-        waiting_floats = []
+        line_placeholders, line_children, waiting_floats = [], [], []
 
         (line, resume_at, preserved_line_break, first_letter,
          last_letter, float_width) = split_inline_box(
-             context, linebox, position_x, max_x, skip_stack, containing_block,
-             line_absolutes, line_fixed, line_placeholders, waiting_floats,
-             line_children=[], max_position_y=max_position_y)
-        linebox.width, linebox.height = line.width, line.height
+             context, containing_block, position_x, max_x,
+             line_placeholders, waiting_floats, line_children, progress)
+        progress.box.width, progress.box.height = line.width, line.height
 
         if is_phantom_linebox(line) and not preserved_line_break:
             line.height = 0
@@ -109,7 +106,7 @@ def get_next_linebox(context, linebox, position_y, skip_stack,
         remove_last_whitespace(context, line)
 
         new_position_x, _, new_available_width = avoid_collisions(
-            context, linebox, containing_block, outer=False)
+            context, progress.box, containing_block, outer=False)
         offset_x = text_align(
             context, line, new_available_width,
             last=(resume_at is None or preserved_line_break))
@@ -129,7 +126,7 @@ def get_next_linebox(context, linebox, position_y, skip_stack,
 
         line.translate(offset_x, offset_y)
         # Avoid floating point errors, as position_y - top + top != position_y
-        # Removing this line breaks the position == linebox.position test below
+        # Removing this line breaks the position == progress.box.position test
         # See https://github.com/Kozea/WeasyPrint/issues/583
         line.position_y = position_y
 
@@ -151,9 +148,6 @@ def get_next_linebox(context, linebox, position_y, skip_stack,
             context.excluded_shapes = new_excluded_shapes
             break
 
-    absolute_boxes.extend(line_absolutes)
-    fixed_boxes.extend(line_fixed)
-
     for placeholder in line_placeholders:
         if 'inline' in placeholder.style.specified['display']:
             # Inline-level static position:
@@ -168,10 +162,13 @@ def get_next_linebox(context, linebox, position_y, skip_stack,
     waiting_floats_y = line.position_y + line.height
     for waiting_float in waiting_floats:
         waiting_float.position_y = waiting_floats_y
+        progress = LayoutProgress(
+            waiting_float, absolute_boxes=progress.absolute_boxes,
+            fixed_boxes=progress.fixed_boxes,
+            max_position_y=progress.max_position_y)
         # TODO: handle skip_stack and float_resume_at
-        waiting_float, float_resume_at = float_layout(
-            context, waiting_float, containing_block, absolute_boxes,
-            fixed_boxes, max_position_y, skip_stack=None)
+        float_progress = float_layout(context, containing_block, progress)
+        waiting_float = float_progress.box
         float_children.append(waiting_float)
     if float_children:
         line.children += tuple(float_children)
@@ -362,50 +359,46 @@ def first_letter_to_box(box, skip_stack, first_letter_style):
     return skip_stack
 
 
-def atomic_box(context, box, position_x, skip_stack, containing_block,
-               absolute_boxes, fixed_boxes):
+def atomic_box(context, containing_block, position_x, progress):
     """Compute the width and the height of the atomic ``box``."""
-    if isinstance(box, boxes.ReplacedBox):
-        box = box.copy()
+    if isinstance(progress.box, boxes.ReplacedBox):
+        box = progress.box.copy()
         inline_replaced_box_layout(box, containing_block)
         box.baseline = box.margin_height()
-    elif isinstance(box, boxes.InlineBlockBox):
-        if box.is_table_wrapper:
+    elif isinstance(progress.box, boxes.InlineBlockBox):
+        if progress.box.is_table_wrapper:
             containing_size = (containing_block.width, containing_block.height)
-            table_wrapper_width(context, box, containing_size)
+            table_wrapper_width(context, progress.box, containing_size)
         box = inline_block_box_layout(
-            context, box, position_x, skip_stack, containing_block,
-            absolute_boxes, fixed_boxes)
+            context, containing_block, position_x, progress)
     else:  # pragma: no cover
         raise TypeError(f'Layout for {type(box).__name__} not handled yet')
     return box
 
 
-def inline_block_box_layout(context, box, position_x, skip_stack,
-                            containing_block, absolute_boxes, fixed_boxes):
+def inline_block_box_layout(context, containing_block, position_x, progress):
     from .block import block_container_layout
 
-    resolve_percentages(box, containing_block)
+    resolve_percentages(progress.box, containing_block)
 
     # http://www.w3.org/TR/CSS21/visudet.html#inlineblock-width
-    if box.margin_left == 'auto':
-        box.margin_left = 0
-    if box.margin_right == 'auto':
-        box.margin_right = 0
+    if progress.box.margin_left == 'auto':
+        progress.box.margin_left = 0
+    if progress.box.margin_right == 'auto':
+        progress.box.margin_right = 0
     # http://www.w3.org/TR/CSS21/visudet.html#block-root-margin
-    if box.margin_top == 'auto':
-        box.margin_top = 0
-    if box.margin_bottom == 'auto':
-        box.margin_bottom = 0
+    if progress.box.margin_top == 'auto':
+        progress.box.margin_top = 0
+    if progress.box.margin_bottom == 'auto':
+        progress.box.margin_bottom = 0
 
-    inline_block_width(box, context, containing_block)
+    inline_block_width(progress.box, context, containing_block)
 
-    box.position_x = position_x
-    box.position_y = 0
-    progress = block_container_layout(
-        context, box, max_position_y=float('inf'), skip_stack=skip_stack,
-        page_is_empty=True, absolute_boxes=absolute_boxes,
-        fixed_boxes=fixed_boxes, adjoining_margins=None, discard=False)
+    progress.box.position_x = position_x
+    progress.box.position_y = 0
+    progress.max_position_y = float('inf')
+    progress.page_is_empty = True
+    progress = block_container_layout(context, progress)
     progress.box.baseline = inline_block_baseline(progress.box)
     return progress.box
 
@@ -442,10 +435,9 @@ def inline_block_width(box, context, containing_block):
         box.width = shrink_to_fit(context, box, available_content_width)
 
 
-def split_inline_level(context, box, position_x, max_x, skip_stack,
-                       containing_block, absolute_boxes, fixed_boxes,
+def split_inline_level(context, containing_block, max_x, position_x,
                        line_placeholders, waiting_floats, line_children,
-                       max_position_y):
+                       progress):
     """Fit as much content as possible from an inline-level box in a width.
 
     Return ``(new_box, resume_at, preserved_line_break, first_letter,
@@ -458,46 +450,43 @@ def split_inline_level(context, box, position_x, max_x, skip_stack,
     is no split is possible.)
 
     """
-    resolve_percentages(box, containing_block)
+    resolve_percentages(progress.box, containing_block)
     float_widths = {'left': 0, 'right': 0}
-    if isinstance(box, boxes.TextBox):
-        box.position_x = position_x
-        if skip_stack is None:
-            skip = 0
+    if isinstance(progress.box, boxes.TextBox):
+        progress.box.position_x = position_x
+        if progress.resume_at is None:
+            skip, skip_stack = 0, None
         else:
-            (skip, skip_stack), = skip_stack.items()
+            (skip, skip_stack), = progress.resume_at.items()
             skip = skip or 0
             assert skip_stack is None
 
         new_box, skip, preserved_line_break = split_text_box(
-            context, box, max_x - position_x, skip)
+            context, progress.box, max_x - position_x, skip)
 
         if skip is None:
             resume_at = None
         else:
             resume_at = {skip: None}
-        if box.text:
-            first_letter = box.text[0]
+        if progress.box.text:
+            first_letter = progress.box.text[0]
             if skip is None:
-                last_letter = box.text[-1]
+                last_letter = progress.box.text[-1]
             else:
-                last_letter = box.text[skip - 1]
+                last_letter = progress.box.text[skip - 1]
         else:
             first_letter = last_letter = None
-    elif isinstance(box, boxes.InlineBox):
-        if box.margin_left == 'auto':
-            box.margin_left = 0
-        if box.margin_right == 'auto':
-            box.margin_right = 0
+    elif isinstance(progress.box, boxes.InlineBox):
+        if progress.box.margin_left == 'auto':
+            progress.box.margin_left = 0
+        if progress.box.margin_right == 'auto':
+            progress.box.margin_right = 0
         (new_box, resume_at, preserved_line_break, first_letter,
          last_letter, float_widths) = split_inline_box(
-             context, box, position_x, max_x, skip_stack, containing_block,
-             absolute_boxes, fixed_boxes, line_placeholders, waiting_floats,
-             line_children, max_position_y)
-    elif isinstance(box, boxes.AtomicInlineLevelBox):
-        new_box = atomic_box(
-            context, box, position_x, skip_stack, containing_block,
-            absolute_boxes, fixed_boxes)
+             context, containing_block, position_x, max_x,
+             line_placeholders, waiting_floats, line_children, progress)
+    elif isinstance(progress.box, boxes.AtomicInlineLevelBox):
+        new_box = atomic_box(context, containing_block, position_x, progress)
         new_box.position_x = position_x
         resume_at = None
         preserved_line_break = False
@@ -505,44 +494,43 @@ def split_inline_level(context, box, position_x, max_x, skip_stack,
         # Atomic inlines behave like ideographic characters.
         first_letter = '\u2e80'
         last_letter = '\u2e80'
-    elif isinstance(box, boxes.InlineFlexBox):
-        box.position_x = position_x
-        box.position_y = 0
+    elif isinstance(progress.box, boxes.InlineFlexBox):
+        progress.box.position_x = position_x
+        progress.box.position_y = 0
         for side in ['top', 'right', 'bottom', 'left']:
-            if getattr(box, f'margin_{side}') == 'auto':
-                setattr(box, f'margin_{side}', 0)
-        progress = flex_layout(
-            context, box, float('inf'), skip_stack, containing_block,
-            False, absolute_boxes, fixed_boxes)
+            if getattr(progress.box, f'margin_{side}') == 'auto':
+                setattr(progress.box, f'margin_{side}', 0)
+        progress = flex_layout(context, containing_block, progress)
         new_box, resume_at = progress.box, progress.resume_at
         preserved_line_break = False
         first_letter = '\u2e80'
         last_letter = '\u2e80'
     else:  # pragma: no cover
-        raise TypeError(f'Layout for {type(box).__name__} not handled yet')
+        raise TypeError(
+            f'Layout for {type(progress.box).__name__} not handled yet')
     return (
         new_box, resume_at, preserved_line_break, first_letter, last_letter,
         float_widths)
 
 
-def _out_of_flow_layout(context, box, containing_block, index, child,
-                        children, line_children, waiting_children,
-                        waiting_floats, absolute_boxes, fixed_boxes,
-                        line_placeholders, float_widths, max_position_x,
-                        position_x, max_position_y):
-    if child.is_absolutely_positioned():
-        child.position_x = position_x
-        placeholder = AbsolutePlaceholder(child)
+def _out_of_flow_layout(context, containing_block, index, children,
+                        line_children, waiting_children, waiting_floats,
+                        line_placeholders, float_widths, max_x, position_x,
+                        progress):
+    if progress.box.is_absolutely_positioned():
+        progress.box.position_x = position_x
+        placeholder = AbsolutePlaceholder(progress.box)
         line_placeholders.append(placeholder)
         waiting_children.append((index, placeholder))
-        if child.style['position'] == 'absolute':
-            absolute_boxes.append(placeholder)
+        if progress.box.style['position'] == 'absolute':
+            progress.absolute_boxes.append(placeholder)
         else:
-            fixed_boxes.append(placeholder)
+            progress.fixed_boxes.append(placeholder)
 
-    elif child.is_floated():
-        child.position_x = position_x
-        float_width = shrink_to_fit(context, child, containing_block.width)
+    elif progress.box.is_floated():
+        progress.box.position_x = position_x
+        float_width = shrink_to_fit(
+            context, progress.box, containing_block.width)
 
         # To retrieve the real available space for floats, we must remove
         # the trailing whitespaces from the line
@@ -553,22 +541,26 @@ def _out_of_flow_layout(context, box, containing_block, index, child,
             float_width -= trailing_whitespace_size(
                 context, non_floating_children[-1])
 
-        if float_width > max_position_x - position_x or waiting_floats:
+        if float_width > max_x - position_x or waiting_floats:
             # TODO: the absolute and fixed boxes in the floats must be
             # added here, and not in iter_line_boxes
-            waiting_floats.append(child)
+            waiting_floats.append(progress.box)
         else:
             # TODO: handle skip_stack and float_resume_at
-            child, float_resume_at = float_layout(
-                context, child, containing_block, absolute_boxes, fixed_boxes,
-                max_position_y, skip_stack=None)
+            float_progress = LayoutProgress(
+                progress.box, max_position_y=progress.max_position_y,
+                absolute_boxes=progress.absolute_boxes,
+                fixed_boxes=progress.fixed_boxes)
+            float_progress = float_layout(
+                context, containing_block, float_progress)
+            child = float_progress.box
             waiting_children.append((index, child))
 
             # Translate previous line children
             dx = max(child.margin_width(), 0)
             float_widths[child.style['float']] += dx
             if child.style['float'] == 'left':
-                if isinstance(box, boxes.LineBox):
+                if isinstance(containing_block, boxes.LineBox):
                     # The parent is the line, update the current position
                     # for the next child. When the parent is not the line
                     # (it is an inline block), the current position of the
@@ -577,26 +569,25 @@ def _out_of_flow_layout(context, box, containing_block, index, child,
                     position_x += dx
             elif child.style['float'] == 'right':
                 # Update the maximum x position for the next children
-                max_position_x -= dx
+                max_x -= dx
             for _, old_child in line_children:
                 if not old_child.is_in_normal_flow():
                     continue
                 if ((child.style['float'] == 'left' and
-                        box.style['direction'] == 'ltr') or
+                        containing_block.style['direction'] == 'ltr') or
                     (child.style['float'] == 'right' and
-                        box.style['direction'] == 'rtl')):
+                        containing_block.style['direction'] == 'rtl')):
                     old_child.translate(dx=dx)
 
-    elif child.is_running():
-        running_name = child.style['position'][1]
+    elif progress.box.is_running():
+        running_name = progress.box.style['position'][1]
         page = context.current_page
-        context.running_elements[running_name][page].append(child)
+        context.running_elements[running_name][page].append(progress.box)
 
 
-def _break_waiting_children(context, box, max_x, initial_skip_stack,
-                            absolute_boxes, fixed_boxes, line_placeholders,
-                            waiting_floats, line_children, children,
-                            waiting_children, max_position_y):
+def _break_waiting_children(context, max_x, initial_skip_stack,
+                            line_placeholders, waiting_floats, line_children,
+                            children, waiting_children, progress):
     if waiting_children:
         # Too wide, try to cut inside waiting children, starting from the end.
         # TODO: we should take care of children added into absolute_boxes,
@@ -610,17 +601,21 @@ def _break_waiting_children(context, box, max_x, initial_skip_stack,
                 # actual size by 1 and render the waiting child again with this
                 # constraint. We may find a better way.
                 max_x = child.position_x + child.margin_width() - 1
-                progress = split_inline_level(
-                    context, child, child.position_x, max_x, None, box,
-                    absolute_boxes, fixed_boxes, line_placeholders,
-                    waiting_floats, line_children, max_position_y)
+                child_progress = LayoutProgress(
+                    child, absolute_boxes=progress.absolute_boxes,
+                    fixed_boxes=progress.fixed_boxes,
+                    max_position_y=progress.max_position_y)
+                new_child, child_resume_at, _, _, _, _ = split_inline_level(
+                    context, progress.box, max_x, child.position_x,
+                    line_placeholders, waiting_floats, line_children,
+                    child_progress)
 
                 children.extend(waiting_children_copy)
-                if progress.box is None:
+                if new_child is None:
                     # May be None where we have an empty TextBox.
                     assert isinstance(child, boxes.TextBox)
                 else:
-                    children.append((child_index, progress.box))
+                    children.append((child_index, new_child))
 
                 # As this child has already been broken following the original
                 # skip stack, we have to add the original skip stack to the
@@ -639,12 +634,12 @@ def _break_waiting_children(context, box, max_x, initial_skip_stack,
                 else:
                     (initial_index, current_skip_stack), = (
                         initial_skip_stack.items())
-                # progress.resume_at is an absolute skip stack
+                # child_resume_at is an absolute skip stack
                 if child_index > initial_index:
-                    return {child_index: progress.resume_at}
+                    return {child_index: child_resume_at}
 
                 # combine the stacks
-                current_resume_at = progress.resume_at
+                current_resume_at = child_resume_at
                 stack = []
                 while current_skip_stack and current_resume_at:
                     (skip, current_skip_stack), = current_skip_stack.items()
@@ -664,10 +659,9 @@ def _break_waiting_children(context, box, max_x, initial_skip_stack,
         return {children[-1][0] + 1: None}
 
 
-def split_inline_box(context, box, position_x, max_x, skip_stack,
-                     containing_block, absolute_boxes, fixed_boxes,
+def split_inline_box(context, containing_block, position_x, max_x,
                      line_placeholders, waiting_floats, line_children,
-                     max_position_y):
+                     progress):
     """Same behavior as split_inline_level."""
 
     # In some cases (shrink-to-fit result being the preferred width)
@@ -678,14 +672,10 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
     # an unexpected line break. The 1e-9 value comes from PEP 485.
     max_x *= 1 + 1e-9
 
-    is_start = skip_stack is None
+    is_start = progress.resume_at is None
     initial_position_x = position_x
-    initial_skip_stack = skip_stack
-    assert isinstance(box, (boxes.LineBox, boxes.InlineBox))
-    left_spacing = (
-        box.padding_left + box.margin_left + box.border_left_width)
-    right_spacing = (
-        box.padding_right + box.margin_right + box.border_right_width)
+    initial_skip_stack = progress.resume_at
+    assert isinstance(progress.box, (boxes.LineBox, boxes.InlineBox))
     content_box_left = position_x
 
     children = []
@@ -695,44 +685,47 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
     float_widths = {'left': 0, 'right': 0}
     float_resume_index = 0
 
-    if box.style['position'] == 'relative':
+    if progress.box.style['position'] == 'relative':
         absolute_boxes = []
+    else:
+        absolute_boxes = progress.absolute_boxes
 
     if is_start:
-        skip = 0
+        skip, skip_stack = 0, None
     else:
-        # TODO: handle multiple skip stacks
-        (skip, skip_stack), = skip_stack.items()
+        (skip, skip_stack), = progress.resume_at.items()
 
-    for i, child in enumerate(box.children[skip:]):
+    for i, child in enumerate(progress.box.children[skip:]):
         index = i + skip
-        child.position_y = box.position_y
+        child.position_y = progress.box.position_y
+        child_progress = LayoutProgress(
+            child, skip_stack, max_position_y=progress.max_position_y,
+            absolute_boxes=absolute_boxes, fixed_boxes=progress.fixed_boxes)
+
         if not child.is_in_normal_flow():
             _out_of_flow_layout(
-                context, box, containing_block, index, child, children,
-                line_children, waiting_children, waiting_floats,
-                absolute_boxes, fixed_boxes, line_placeholders, float_widths,
-                max_x, position_x, max_position_y)
+                context, containing_block, index, children, line_children,
+                waiting_children, waiting_floats, line_placeholders,
+                float_widths, max_x, position_x, child_progress)
             if child.is_floated():
                 float_resume_index = index + 1
                 if child not in waiting_floats:
                     max_x -= child.margin_width()
             continue
 
-        is_last_child = (index == len(box.children) - 1)
+        is_last_child = (index == len(progress.box.children) - 1)
         available_width = max_x
         child_waiting_floats = []
         new_child, resume_at, preserved, first, last, new_float_widths = (
             split_inline_level(
-                context, child, position_x, available_width, skip_stack,
-                containing_block, absolute_boxes, fixed_boxes,
+                context, containing_block, available_width, position_x,
                 line_placeholders, child_waiting_floats, line_children,
-                max_position_y))
-        if box.style['direction'] == 'rtl':
-            end_spacing = left_spacing
+                child_progress))
+        if progress.box.style['direction'] == 'rtl':
+            end_spacing = progress.box.left_spacing()
             max_x -= new_float_widths['left']
         else:
-            end_spacing = right_spacing
+            end_spacing = progress.box.right_spacing()
             max_x -= new_float_widths['right']
         if is_last_child and end_spacing and resume_at is None:
             # TODO: we should take care of children added into absolute_boxes,
@@ -740,10 +733,9 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
             available_width -= end_spacing
             new_child, resume_at, preserved, first, last, new_float_widths = (
                 split_inline_level(
-                    context, child, position_x, available_width, skip_stack,
-                    containing_block, absolute_boxes, fixed_boxes,
+                    context, containing_block, available_width, position_x,
                     line_placeholders, child_waiting_floats, line_children,
-                    max_position_y))
+                    child_progress))
 
         skip_stack = None
         if preserved:
@@ -754,7 +746,7 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
             last_letter = ' '
         elif last_letter is False:
             last_letter = ' '  # no-break space
-        elif box.style['white_space'] in ('pre', 'nowrap'):
+        elif progress.box.style['white_space'] in ('pre', 'nowrap'):
             can_break = False
         if can_break is None:
             if None in (last_letter, first):
@@ -780,7 +772,7 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
             # May be None where we have an empty TextBox.
             assert isinstance(child, boxes.TextBox)
         else:
-            if isinstance(box, boxes.LineBox):
+            if isinstance(progress.box, boxes.LineBox):
                 line_children.append((index, new_child))
             # TODO: we should try to find a better condition here.
             trailing_whitespace = (
@@ -790,9 +782,9 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
 
             if new_position_x > max_x and not trailing_whitespace:
                 previous_resume_at = _break_waiting_children(
-                    context, box, max_x, initial_skip_stack, absolute_boxes,
-                    fixed_boxes, line_placeholders, waiting_floats,
-                    line_children, children, waiting_children, max_position_y)
+                    context, max_x, initial_skip_stack, line_placeholders,
+                    waiting_floats, line_children, children, waiting_children,
+                    progress)
                 if previous_resume_at:
                     resume_at = previous_resume_at
                     break
@@ -810,7 +802,7 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
         resume_at = None
 
     # Reorder inline blocks when direction is rtl
-    if box.style['direction'] == 'rtl' and len(children) > 1:
+    if progress.box.style['direction'] == 'rtl' and len(children) > 1:
         in_flow_children = [
             box_child for _, box_child in children
             if box_child.is_in_normal_flow()]
@@ -821,10 +813,10 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
             position_x += child.margin_width()
 
     is_end = resume_at is None
-    new_box = box.copy_with_children(
+    new_box = progress.box.copy_with_children(
         [box_child for index, box_child in children])
     new_box.remove_decoration(start=not is_start, end=not is_end)
-    if isinstance(box, boxes.LineBox):
+    if isinstance(progress.box, boxes.LineBox):
         # We must reset line box width according to its new children
         new_box.width = 0
         children = new_box.children
@@ -838,19 +830,20 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
                 break
     else:
         new_box.position_x = initial_position_x
-        if box.style['box_decoration_break'] == 'clone':
+        if progress.box.style['box_decoration_break'] == 'clone':
             translation_needed = True
         else:
             translation_needed = (
-                is_start if box.style['direction'] == 'ltr' else is_end)
+                is_start if progress.box.style['direction'] == 'ltr'
+                else is_end)
         if translation_needed:
             for child in new_box.children:
-                child.translate(dx=left_spacing)
+                child.translate(dx=progress.box.left_spacing())
         new_box.width = position_x - content_box_left
         new_box.translate(dx=float_widths['left'], ignore_floats=True)
 
-    line_height, new_box.baseline = strut_layout(box.style, context)
-    new_box.height = box.style['font_size']
+    line_height, new_box.baseline = strut_layout(progress.box.style, context)
+    new_box.height = progress.box.style['font_size']
     half_leading = (line_height - new_box.height) / 2
     # Set margins to the half leading but also compensate for borders and
     # paddings. We want margin_height() == line_height
@@ -861,14 +854,15 @@ def split_inline_box(context, box, position_x, max_x, skip_stack,
 
     if new_box.style['position'] == 'relative':
         for absolute_box in absolute_boxes:
-            absolute_layout(context, absolute_box, new_box, fixed_boxes)
+            absolute_layout(
+                context, absolute_box, new_box, progress.fixed_boxes)
 
     if resume_at is not None:
         index = tuple(resume_at)[0]
         if index < float_resume_index:
             resume_at = {float_resume_index: None}
 
-    if box.is_leader:
+    if progress.box.is_leader:
         first_letter = True
         last_letter = False
 

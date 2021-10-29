@@ -21,10 +21,10 @@ class FlexLine(list):
     pass
 
 
-def flex_layout(context, box, max_position_y, skip_stack, containing_block,
-                page_is_empty, absolute_boxes, fixed_boxes):
+def flex_layout(context, containing_block, progress):
     from . import block, preferred
 
+    box = progress.box
     context.create_block_formatting_context()
     resume_at = None
 
@@ -50,7 +50,7 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
                 box.padding_left - box.padding_right -
                 box.border_left_width - box.border_right_width)
         else:
-            main_space = max_position_y - box.position_y
+            main_space = progress.max_position_y - box.position_y
             if containing_block.height != 'auto':
                 if isinstance(containing_block.height, Dimension):
                     assert containing_block.height.unit == 'px'
@@ -67,7 +67,7 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
         available_cross_space = getattr(box, cross)
     else:
         if cross == 'height':
-            main_space = max_position_y - box.content_box_y()
+            main_space = progress.max_position_y - box.content_box_y()
             if containing_block.height != 'auto':
                 if isinstance(containing_block.height, Dimension):
                     assert containing_block.height.unit == 'px'
@@ -105,7 +105,7 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
     else:
         parent_box.width = preferred.flex_max_content_width(
             context, parent_box)
-    original_skip_stack = skip_stack
+    skip_stack = original_skip_stack = progress.resume_at
     if skip_stack is not None:
         # TODO: handle multiple skip stacks
         (skip, skip_stack), = skip_stack.items()
@@ -154,9 +154,11 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
             new_child.style['height'] = 'auto'
             new_child.style['min_height'] = Dimension(0, 'px')
             new_child.style['max_height'] = Dimension(float('inf'), 'px')
+            child_progress = LayoutProgress(
+                new_child, child_skip_stack,
+                page_is_empty=progress.page_is_empty)
             new_child = block.block_level_layout(
-                context, new_child, float('inf'), child_skip_stack,
-                parent_box, page_is_empty, [], [], [], False).box
+                context, parent_box, child_progress).box
             content_size = new_child.height
             child.min_height = min(specified_size, content_size)
 
@@ -202,36 +204,32 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
         else:
             child.style[axis] = 'max-content'
 
+            if isinstance(child, boxes.ParentBox):
+                new_child = child.copy_with_children(child.children)
+            else:
+                new_child = child.copy()
+            child_progress = LayoutProgress(
+                new_child, child_skip_stack,
+                page_is_empty=progress.page_is_empty)
+
             # TODO: don't set style value, support *-content values instead
             if child.style[axis] == 'max-content':
                 child.style[axis] = 'auto'
                 if axis == 'width':
                     child.flex_base_size = max_content_width(context, child)
                 else:
-                    if isinstance(child, boxes.ParentBox):
-                        new_child = child.copy_with_children(child.children)
-                    else:
-                        new_child = child.copy()
                     new_child.width = float('inf')
                     new_child = block.block_level_layout(
-                        context, new_child, float('inf'), child_skip_stack,
-                        parent_box, page_is_empty, absolute_boxes, fixed_boxes,
-                        adjoining_margins=[], discard=False).box
+                        context, parent_box, child_progress).box
                     child.flex_base_size = new_child.margin_height()
             elif child.style[axis] == 'min-content':
                 child.style[axis] = 'auto'
                 if axis == 'width':
                     child.flex_base_size = min_content_width(context, child)
                 else:
-                    if isinstance(child, boxes.ParentBox):
-                        new_child = child.copy_with_children(child.children)
-                    else:
-                        new_child = child.copy()
                     new_child.width = 0
                     new_child = block.block_level_layout(
-                        context, new_child, float('inf'), child_skip_stack,
-                        parent_box, page_is_empty, absolute_boxes, fixed_boxes,
-                        adjoining_margins=[], discard=False).box
+                        context, parent_box, child_progress).box
                     child.flex_base_size = new_child.margin_height()
             else:
                 assert child.style[axis].unit == 'px'
@@ -461,19 +459,22 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
             else:
                 child_copy = child.copy()
             block.block_level_width(child_copy, parent_box)
-            progress = block.block_level_layout_switch(
-                context, child_copy, float('inf'), child_skip_stack,
-                parent_box, page_is_empty, absolute_boxes, fixed_boxes,
-                adjoining_margins=[], discard=False)
+            child_progress = LayoutProgress(
+                child_copy, child_skip_stack,
+                page_is_empty=progress.page_is_empty,
+                absolute_boxes=progress.absolute_boxes,
+                fixed_boxes=progress.fixed_boxes)
+            child_progress = block.block_level_layout_switch(
+                context, parent_box, child_progress)
 
-            child._baseline = find_in_flow_baseline(progress.box) or 0
+            child._baseline = find_in_flow_baseline(child_progress.box) or 0
             if cross == 'height':
-                child.height = progress.box.height
+                child.height = child_progress.box.height
                 # As flex items margins never collapse (with other flex items
                 # or with the flex container), we can add the adjoining margins
                 # to the child bottom margin.
                 child.margin_bottom += block.collapse_margin(
-                    progress.adjoining_margins)
+                    child_progress.adjoining_margins)
             else:
                 child.width = min_content_width(context, child, outer=False)
 
@@ -840,10 +841,14 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
     for line in flex_lines:
         for i, child in line:
             if child.is_flex_item:
+                child_progress = LayoutProgress(
+                    child, child_skip_stack,
+                    max_position_y=progress.max_position_y,
+                    page_is_empty=progress.page_is_empty,
+                    absolute_boxes=progress.absolute_boxes,
+                    fixed_boxes=progress.fixed_boxes)
                 progress = block.block_level_layout_switch(
-                    context, child, max_position_y, child_skip_stack, box,
-                    page_is_empty, absolute_boxes, fixed_boxes,
-                    adjoining_margins=[], discard=False)
+                    context, box, child_progress)
 
                 if progress.box is None:
                     if resume_at:
@@ -894,4 +899,7 @@ def flex_layout(context, box, max_position_y, skip_stack, containing_block,
     # TODO: handle out_of_flow_resume_at
     out_of_flow_resume_at = None
     # TODO: check these returned values
-    return LayoutProgress(box, resume_at, out_of_flow_resume_at)
+    return LayoutProgress(
+        box, resume_at, out_of_flow_resume_at,
+        absolute_boxes=progress.absolute_boxes,
+        fixed_boxes=progress.fixed_boxes)

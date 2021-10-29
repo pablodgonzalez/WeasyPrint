@@ -312,10 +312,18 @@ class LayoutContext:
 class LayoutProgress:
     def __init__(self, box=None, resume_at=None, out_of_flow_resume_at=None,
                  next_page=None, adjoining_margins=None,
-                 collapsing_through=False):
+                 collapsing_through=False, page_is_empty=False,
+                 max_position_y=float('inf'), absolute_boxes=None,
+                 fixed_boxes=None, discard=False):
         self.box = box
         self.resume_at = resume_at
         self.out_of_flow_resume_at = out_of_flow_resume_at
         self.next_page = next_page or {'break': 'any', 'page': None}
-        self.adjoining_margins = adjoining_margins or []
+        self.adjoining_margins = (
+            [] if adjoining_margins is None else adjoining_margins)
         self.collapsing_through = collapsing_through
+        self.page_is_empty = page_is_empty
+        self.max_position_y = max_position_y
+        self.absolute_boxes = [] if absolute_boxes is None else absolute_boxes
+        self.fixed_boxes = [] if fixed_boxes is None else fixed_boxes
+        self.discard = discard

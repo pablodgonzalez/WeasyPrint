@@ -21,10 +21,10 @@ from .replaced import block_replaced_box_layout
 from .table import table_layout, table_wrapper_width
 
 
-def block_level_layout(context, box, max_position_y, skip_stack,
-                       containing_block, page_is_empty, absolute_boxes,
-                       fixed_boxes, adjoining_margins, discard):
+def block_level_layout(context, containing_block, progress):
     """Lay out the block-level ``box``."""
+    box = progress.box
+
     if not isinstance(box, boxes.TableBox):
         resolve_percentages(box, containing_block)
 
@@ -33,7 +33,7 @@ def block_level_layout(context, box, max_position_y, skip_stack,
         if box.margin_bottom == 'auto':
             box.margin_bottom = 0
 
-        if (context.current_page > 1 and page_is_empty):
+        if (context.current_page > 1 and progress.page_is_empty):
             # TODO: we should take care of cases when this box doesn't have
             # collapsing margins with the first child of the page, see
             # test_margin_break_clearance.
@@ -44,71 +44,53 @@ def block_level_layout(context, box, max_position_y, skip_stack,
                     box.margin_top = 0
 
         collapsed_margin = collapse_margin(
-            adjoining_margins + [box.margin_top])
+            progress.adjoining_margins + [box.margin_top])
         box.clearance = get_clearance(context, box, collapsed_margin)
         if box.clearance is not None:
             top_border_edge = box.position_y + collapsed_margin + box.clearance
             box.position_y = top_border_edge - box.margin_top
-            adjoining_margins = []
+            progress.adjoining_margins = []
 
-    return block_level_layout_switch(
-        context, box, max_position_y, skip_stack, containing_block,
-        page_is_empty, absolute_boxes, fixed_boxes, adjoining_margins, discard)
+    return block_level_layout_switch(context, containing_block, progress)
 
 
-def block_level_layout_switch(context, box, max_position_y, skip_stack,
-                              containing_block, page_is_empty, absolute_boxes,
-                              fixed_boxes, adjoining_margins, discard):
+def block_level_layout_switch(context, containing_block, progress):
     """Call the layout function corresponding to the ``box`` type."""
-    if isinstance(box, boxes.TableBox):
-        return table_layout(
-            context, box, max_position_y, skip_stack, containing_block,
-            page_is_empty, absolute_boxes, fixed_boxes)
-    elif isinstance(box, boxes.BlockBox):
-        return block_box_layout(
-            context, box, max_position_y, skip_stack, containing_block,
-            page_is_empty, absolute_boxes, fixed_boxes, adjoining_margins,
-            discard)
-    elif isinstance(box, boxes.BlockReplacedBox):
-        return block_replaced_box_layout(context, box, containing_block)
-    elif isinstance(box, boxes.FlexBox):
-        return flex_layout(
-            context, box, max_position_y, skip_stack, containing_block,
-            page_is_empty, absolute_boxes, fixed_boxes)
+    if isinstance(progress.box, boxes.TableBox):
+        return table_layout(context, containing_block, progress)
+    elif isinstance(progress.box, boxes.BlockBox):
+        return block_box_layout(context, containing_block, progress)
+    elif isinstance(progress.box, boxes.BlockReplacedBox):
+        return block_replaced_box_layout(
+            context, containing_block, progress.box)
+    elif isinstance(progress.box, boxes.FlexBox):
+        return flex_layout(context, containing_block, progress)
     else:  # pragma: no cover
-        raise TypeError(f'Layout for {type(box).__name__} not handled yet')
+        raise TypeError(
+            f'Layout for {type(progress.box).__name__} not handled yet')
 
 
-def block_box_layout(context, box, max_position_y, skip_stack,
-                     containing_block, page_is_empty, absolute_boxes,
-                     fixed_boxes, adjoining_margins, discard):
+def block_box_layout(context, containing_block, progress):
     """Lay out the block ``box``."""
-    if (box.style['column_width'] != 'auto' or
-            box.style['column_count'] != 'auto'):
-        progress = columns_layout(
-            context, box, max_position_y, skip_stack, containing_block,
-            page_is_empty, absolute_boxes, fixed_boxes, adjoining_margins)
+    if (progress.box.style['column_width'] != 'auto' or
+            progress.box.style['column_count'] != 'auto'):
+        progress = columns_layout(context, containing_block, progress)
         # TODO: this condition and the whole relayout are probably wrong
         if progress.resume_at is None:
             bottom_spacing = (
                 progress.box.margin_bottom + progress.box.padding_bottom +
                 progress.box.border_bottom_width)
             if bottom_spacing:
-                max_position_y -= bottom_spacing
-                progress = columns_layout(
-                    context, box, max_position_y, skip_stack,
-                    containing_block, page_is_empty, absolute_boxes,
-                    fixed_boxes, adjoining_margins)
+                progress.max_position_y -= bottom_spacing
+                progress = columns_layout(context, containing_block, progress)
         return progress
-    elif box.is_table_wrapper:
+    elif progress.box.is_table_wrapper:
         table_wrapper_width(
-            context, box, (containing_block.width, containing_block.height))
-    block_level_width(box, containing_block)
+            context, progress.box,
+            (containing_block.width, containing_block.height))
+    block_level_width(progress.box, containing_block)
 
-    progress = block_container_layout(
-        context, box, max_position_y, skip_stack, page_is_empty,
-        absolute_boxes, fixed_boxes, adjoining_margins, discard)
-    progress.box = progress.box
+    progress = block_container_layout(context, progress)
     if progress.box and progress.box.is_table_wrapper:
         # Don't collide with floats
         # http://www.w3.org/TR/CSS21/visuren.html#floats
@@ -214,27 +196,28 @@ def relative_positioning(box, containing_block):
             relative_positioning(child, containing_block)
 
 
-def _out_of_flow_layout(context, box, index, child, new_children,
-                        page_is_empty, absolute_boxes, fixed_boxes,
-                        adjoining_margins, max_position_y, skip_stack):
+def _out_of_flow_layout(context, containing_block, index, new_children,
+                        progress):
     stop = False
     resume_at = None
 
-    child.position_y += collapse_margin(adjoining_margins)
-    if child.is_absolutely_positioned():
-        placeholder = AbsolutePlaceholder(child)
+    progress.box.position_y += collapse_margin(progress.adjoining_margins)
+    if progress.box.is_absolutely_positioned():
+        placeholder = AbsolutePlaceholder(progress.box)
         placeholder.index = index
         new_children.append(placeholder)
-        if child.style['position'] == 'absolute':
-            absolute_boxes.append(placeholder)
+        if progress.box.style['position'] == 'absolute':
+            progress.absolute_boxes.append(placeholder)
         else:
-            fixed_boxes.append(placeholder)
-    elif child.is_floated():
-        new_child, float_resume_at = float_layout(
-            context, child, box, absolute_boxes, fixed_boxes, max_position_y,
-            skip_stack)
-        if (page_is_empty and not new_children) or not (
-                new_child.position_y + new_child.height > max_position_y):
+            progress.fixed_boxes.append(placeholder)
+    elif progress.box.is_floated():
+        float_progress = float_layout(context, containing_block, progress)
+        new_child = float_progress.box
+        float_resume_at = float_progress.resume_at
+        force_rendering = progress.page_is_empty and not new_children
+        too_long = (
+            new_child.position_y + new_child.height > progress.max_position_y)
+        if force_rendering or not too_long:
             # Float fits or empty page, put the float on this page
             new_child.index = index
             new_children.append(new_child)
@@ -243,37 +226,34 @@ def _out_of_flow_layout(context, box, index, child, new_children,
         else:
             # Overflow, put the float on a new page
             last_in_flow_child = find_last_in_flow_child(new_children)
-            page_break = block_level_page_break(last_in_flow_child, child)
+            page_break = block_level_page_break(
+                last_in_flow_child, progress.box)
             resume_at = {index: None}
             if new_children and page_break in ('avoid', 'avoid-page'):
                 result = find_earlier_page_break(
-                    new_children, absolute_boxes, fixed_boxes)
+                    new_children, progress.absolute_boxes,
+                    progress.fixed_boxes)
                 if result:
                     new_children, resume_at = result
             stop = True
-    elif child.is_running():
-        running_name = child.style['position'][1]
+    elif progress.box.is_running():
+        running_name = progress.box.style['position'][1]
         page = context.current_page
-        context.running_elements[running_name][page].append(child)
+        context.running_elements[running_name][page].append(progress.box)
 
     return stop, resume_at
 
 
-def _linebox_layout(context, box, index, child, new_children, page_is_empty,
-                    absolute_boxes, fixed_boxes, adjoining_margins,
-                    max_position_y, position_y, skip_stack, first_letter_style,
-                    draw_bottom_decoration):
+def _linebox_layout(context, containing_block, index, new_children, position_y,
+                    first_letter_style, draw_bottom_decoration, progress):
     abort = stop = False
     resume_at = None
+    skip_stack = progress.resume_at
 
-    assert len(box.children) == 1, 'line box with siblings before layout'
-
-    if adjoining_margins:
-        position_y += collapse_margin(adjoining_margins)
-    new_containing_block = box
+    if progress.adjoining_margins:
+        position_y += collapse_margin(progress.adjoining_margins)
     lines_iterator = iter_line_boxes(
-        context, child, position_y, skip_stack, new_containing_block,
-        absolute_boxes, fixed_boxes, first_letter_style, max_position_y)
+        context, containing_block, position_y, first_letter_style, progress)
     for i, (line, resume_at) in enumerate(lines_iterator):
         line.resume_at = resume_at
         new_position_y = line.position_y + line.height
@@ -282,30 +262,33 @@ def _linebox_layout(context, box, index, child, new_children, page_is_empty,
         # box if needed
         draw_bottom_decoration |= resume_at is None
         if draw_bottom_decoration:
-            offset_y = box.border_bottom_width + box.padding_bottom
+            offset_y = (
+                containing_block.border_bottom_width +
+                containing_block.padding_bottom)
         else:
             offset_y = 0
 
         # Allow overflow if the first line of the page is higher
         # than the page itself so that we put *something* on this
         # page and can advance in the context.
-        if new_position_y + offset_y > max_position_y and (
-                new_children or not page_is_empty):
-            over_orphans = len(new_children) - box.style['orphans']
-            if over_orphans < 0 and not page_is_empty:
+        if new_position_y + offset_y > progress.max_position_y and (
+                new_children or not progress.page_is_empty):
+            over_orphans = (
+                len(new_children) - containing_block.style['orphans'])
+            if over_orphans < 0 and not progress.page_is_empty:
                 # Reached the bottom of the page before we had
                 # enough lines for orphans, cancel the whole box.
                 abort = True
                 break
             # How many lines we need on the next page to satisfy widows
             # -1 for the current line.
-            needed = box.style['widows'] - 1
+            needed = containing_block.style['widows'] - 1
             if needed:
                 for _ in lines_iterator:
                     needed -= 1
                     if needed == 0:
                         break
-            if needed > over_orphans and not page_is_empty:
+            if needed > over_orphans and not progress.page_is_empty:
                 # Total number of lines < orphans + widows
                 abort = True
                 break
@@ -322,21 +305,22 @@ def _linebox_layout(context, box, index, child, new_children, page_is_empty,
         # "When an unforced page break occurs here, both the adjoining
         #  ‘margin-top’ and ‘margin-bottom’ are set to zero."
         # See https://github.com/Kozea/WeasyPrint/issues/115
-        elif page_is_empty and new_position_y > max_position_y:
+        elif (progress.page_is_empty and
+              new_position_y > progress.max_position_y):
             # Remove the top border when a page is empty and the box is
             # too high to be drawn in one page
-            new_position_y -= box.margin_top
-            line.translate(0, -box.margin_top)
-            box.margin_top = 0
+            new_position_y -= containing_block.margin_top
+            line.translate(0, -containing_block.margin_top)
+            containing_block.margin_top = 0
 
         new_children.append(line)
         position_y = new_position_y
         skip_stack = resume_at
 
         # Break box if we reached max-lines
-        if box.style['max_lines'] != 'none':
-            if i >= box.style['max_lines'] - 1:
-                line.block_ellipsis = box.style['block_ellipsis']
+        if containing_block.style['max_lines'] != 'none':
+            if i >= containing_block.style['max_lines'] - 1:
+                line.block_ellipsis = containing_block.style['block_ellipsis']
                 break
 
     if new_children and new_children[-1].resume_at:
@@ -345,64 +329,66 @@ def _linebox_layout(context, box, index, child, new_children, page_is_empty,
     return abort, stop, resume_at, position_y
 
 
-def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
-                    absolute_boxes, fixed_boxes, adjoining_margins,
-                    allowed_max_position_y, max_position_y, position_y,
-                    skip_stack, first_letter_style, draw_bottom_decoration,
-                    collapsing_with_children, discard, next_page):
+def _in_flow_layout(context, containing_block, index, new_children,
+                    real_max_position_y, position_y, first_letter_style,
+                    draw_bottom_decoration, collapsing_with_children,
+                    progress):
     abort = stop = False
+    allowed_max_position_y = progress.max_position_y
+    page_is_empty = progress.page_is_empty
+    adjoining_margins = progress.adjoining_margins
 
     last_in_flow_child = find_last_in_flow_child(new_children)
     if last_in_flow_child is not None:
         # Between in-flow siblings
-        page_break = block_level_page_break(last_in_flow_child, child)
-        page_name = block_level_page_name(last_in_flow_child, child)
+        page_break = block_level_page_break(last_in_flow_child, progress.box)
+        page_name = block_level_page_name(last_in_flow_child, progress.box)
         if page_name or page_break in (
                 'page', 'left', 'right', 'recto', 'verso'):
-            page_name = child.page_values()[0]
+            page_name = progress.box.page_values()[0]
             next_page = {'break': page_break, 'page': page_name}
             resume_at = {index: None}
             stop = True
             return (
-                abort, stop, resume_at, position_y, adjoining_margins,
-                next_page, new_children)
+                abort, stop, resume_at, position_y,
+                adjoining_margins, next_page, new_children)
     else:
         page_break = 'auto'
 
-    new_containing_block = box
-
-    if not new_containing_block.is_table_wrapper:
-        resolve_percentages(child, new_containing_block)
-        if (child.is_in_normal_flow() and last_in_flow_child is None and
+    if not containing_block.is_table_wrapper:
+        resolve_percentages(progress.box, containing_block)
+        if (progress.box.is_in_normal_flow() and last_in_flow_child is None and
                 collapsing_with_children):
             # TODO: add the adjoining descendants' margin top to
             # [child.margin_top]
             old_collapsed_margin = collapse_margin(adjoining_margins)
-            if child.margin_top == 'auto':
+            if progress.box.margin_top == 'auto':
                 child_margin_top = 0
             else:
-                child_margin_top = child.margin_top
+                child_margin_top = progress.box.margin_top
             new_collapsed_margin = collapse_margin(
                 adjoining_margins + [child_margin_top])
             collapsed_margin_difference = (
                 new_collapsed_margin - old_collapsed_margin)
             for previous_new_child in new_children:
                 previous_new_child.translate(dy=collapsed_margin_difference)
-            clearance = get_clearance(context, child, new_collapsed_margin)
+            clearance = get_clearance(
+                context, progress.box, new_collapsed_margin)
             if clearance is not None:
                 for previous_new_child in new_children:
                     previous_new_child.translate(
                         dy=-collapsed_margin_difference)
 
                 collapsed_margin = collapse_margin(adjoining_margins)
-                box.position_y += collapsed_margin - box.margin_top
+                containing_block.position_y += (
+                    collapsed_margin - containing_block.margin_top)
                 # Count box.margin_top as we emptied adjoining_margins
                 adjoining_margins = []
-                position_y = box.content_box_y()
+                position_y = containing_block.content_box_y()
 
-    if adjoining_margins and box.is_table_wrapper:
+    if adjoining_margins and containing_block.is_table_wrapper:
         collapsed_margin = collapse_margin(adjoining_margins)
-        child.position_y += collapsed_margin
+        progress.box.position_y += collapsed_margin
         position_y += collapsed_margin
         adjoining_margins = []
 
@@ -410,14 +396,13 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
         child for child in new_children
         if not isinstance(child, AbsolutePlaceholder))
 
-    if not getattr(child, 'first_letter_style', None):
-        child.first_letter_style = first_letter_style
-    progress = block_level_layout(
-         context, child, max_position_y, skip_stack, new_containing_block,
-         page_is_empty_with_no_children, absolute_boxes, fixed_boxes,
-         adjoining_margins, discard)
+    if not getattr(progress.box, 'first_letter_style', None):
+        progress.box.first_letter_style = first_letter_style
+    progress.max_position_y = real_max_position_y
+    progress.page_is_empty = page_is_empty_with_no_children
+    progress.adjoining_margins = adjoining_margins
+    progress = block_level_layout(context, containing_block, progress)
     new_child, resume_at = progress.box, progress.resume_at
-    skip_stack = None
 
     if new_child is not None:
         # index in its non-laid-out parent, not in future new parent
@@ -458,7 +443,7 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
         if page_break in ('avoid', 'avoid-page'):
             # TODO: fill the blank space at the bottom of the page
             result = find_earlier_page_break(
-                new_children, absolute_boxes, fixed_boxes)
+                new_children, progress.absolute_boxes, progress.fixed_boxes)
             if result:
                 new_children, resume_at = result
                 stop = True
@@ -482,7 +467,8 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
             # This box has only rendered absolute children, keep them
             # for the next page. This is for example useful for list
             # markers.
-            remove_placeholders(new_children, absolute_boxes, fixed_boxes)
+            remove_placeholders(
+                new_children, progress.absolute_boxes, progress.fixed_boxes)
             new_children = []
 
         if new_children:
@@ -505,10 +491,16 @@ def _in_flow_layout(context, box, index, child, new_children, page_is_empty,
         progress.next_page, new_children)
 
 
-def block_container_layout(context, box, max_position_y, skip_stack,
-                           page_is_empty, absolute_boxes, fixed_boxes,
-                           adjoining_margins, discard):
+def block_container_layout(context, progress):
     """Set the ``box`` height."""
+    box = progress.box
+    max_position_y = progress.max_position_y
+    skip_stack = progress.resume_at
+    discard = progress.discard
+    adjoining_margins = progress.adjoining_margins.copy()
+    absolute_boxes = progress.absolute_boxes
+    fixed_boxes = progress.fixed_boxes
+
     # TODO: boxes.FlexBox is allowed here because flex_layout calls
     # block_container_layout, there's probably a better solution.
     assert isinstance(box, (boxes.BlockContainerBox, boxes.FlexBox))
@@ -526,9 +518,6 @@ def block_container_layout(context, box, max_position_y, skip_stack,
     discard |= box.style['continue'] == 'discard'
     draw_bottom_decoration = (
         discard or box.style['box_decoration_break'] == 'clone')
-
-    if adjoining_margins is None:
-        adjoining_margins = []
 
     if draw_bottom_decoration:
         max_position_y -= (
@@ -581,30 +570,29 @@ def block_container_layout(context, box, max_position_y, skip_stack,
 
         child_resume_at = out_of_flow_child_resume_at = None
 
+        progress = LayoutProgress(
+            child, skip_stack, None, next_page, adjoining_margins,
+            progress.collapsing_through, progress.page_is_empty,
+            allowed_max_position_y, absolute_boxes, fixed_boxes, discard)
+
         if not child.is_in_normal_flow():
             abort = False
             stop, out_of_flow_child_resume_at = _out_of_flow_layout(
-                context, box, index, child, new_children, page_is_empty,
-                absolute_boxes, fixed_boxes, adjoining_margins,
-                allowed_max_position_y, skip_stack)
+                context, box, index, new_children, progress)
 
         elif isinstance(child, boxes.LineBox):
             abort, stop, child_resume_at, position_y = _linebox_layout(
-                context, box, index, child, new_children, page_is_empty,
-                absolute_boxes, fixed_boxes, adjoining_margins,
-                allowed_max_position_y, position_y, skip_stack,
-                first_letter_style, draw_bottom_decoration)
+                context, box, index, new_children, position_y,
+                first_letter_style, draw_bottom_decoration, progress)
             draw_bottom_decoration |= child_resume_at is None
             adjoining_margins = []
 
         else:
             (abort, stop, child_resume_at, position_y, adjoining_margins,
              next_page, new_children) = _in_flow_layout(
-                 context, box, index, child, new_children, page_is_empty,
-                 absolute_boxes, fixed_boxes, adjoining_margins,
-                 allowed_max_position_y, max_position_y, position_y,
-                 skip_stack, first_letter_style, draw_bottom_decoration,
-                 collapsing_with_children, discard, next_page)
+                 context, box, index, new_children, max_position_y,
+                 position_y, first_letter_style, draw_bottom_decoration,
+                 collapsing_with_children, progress)
             skip_stack = None
 
         if child_resume_at:
@@ -630,7 +618,7 @@ def block_container_layout(context, box, max_position_y, skip_stack,
 
     if (box_is_fragmented and
             box.style['break_inside'] in ('avoid', 'avoid-page') and
-            not page_is_empty):
+            not progress.page_is_empty):
         return LayoutProgress()
 
     if collapsing_with_children:
@@ -718,7 +706,9 @@ def block_container_layout(context, box, max_position_y, skip_stack,
 
     return LayoutProgress(
         new_box, resume_at, out_of_flow_resume_at, next_page,
-        adjoining_margins, collapsing_through)
+        adjoining_margins, collapsing_through, progress.page_is_empty,
+        progress.max_position_y, progress.absolute_boxes,
+        progress.fixed_boxes, progress.discard)
 
 
 def collapse_margin(adjoining_margins):

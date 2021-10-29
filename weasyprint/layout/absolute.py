@@ -5,6 +5,7 @@
 """
 
 from ..formatting_structure import boxes
+from . import LayoutProgress
 from .min_max import handle_min_max_width
 from .percent import resolve_percentages, resolve_position_percentages
 from .preferred import shrink_to_fit
@@ -203,10 +204,9 @@ def absolute_block(context, box, containing_block, fixed_boxes):
     if box.is_table_wrapper:
         table_wrapper_width(context, box, (cb_width, cb_height))
 
-    progress = block_container_layout(
-        context, box, max_position_y=float('inf'), skip_stack=None,
-        page_is_empty=False, absolute_boxes=absolute_boxes,
-        fixed_boxes=fixed_boxes, adjoining_margins=None, discard=False)
+    progress = LayoutProgress(
+        box, absolute_boxes=absolute_boxes, fixed_boxes=fixed_boxes)
+    progress = block_container_layout(context, progress)
 
     for child_placeholder in absolute_boxes:
         absolute_layout(context, child_placeholder, progress.box, fixed_boxes)
@@ -241,10 +241,9 @@ def absolute_flex(context, box, containing_block_sizes, fixed_boxes,
     if box.is_table_wrapper:
         table_wrapper_width(context, box, (cb_width, cb_height))
 
-    progress = flex_layout(
-        context, box, max_position_y=float('inf'), skip_stack=None,
-        containing_block=containing_block, page_is_empty=False,
-        absolute_boxes=absolute_boxes, fixed_boxes=fixed_boxes)
+    progress = LayoutProgress(
+        box, absolute_boxes=absolute_boxes, fixed_boxes=fixed_boxes)
+    progress = flex_layout(context, containing_block, progress)
 
     for child_placeholder in absolute_boxes:
         absolute_layout(context, child_placeholder, progress.box, fixed_boxes)

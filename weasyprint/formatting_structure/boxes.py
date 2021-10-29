@@ -161,6 +161,14 @@ class Box:
         """Height of the margin box (aka. outer box)."""
         return self.border_height() + self.margin_top + self.margin_bottom
 
+    def left_spacing(self):
+        """Width of left margin, border and padding."""
+        return self.padding_left + self.margin_left + self.border_left_width
+
+    def right_spacing(self):
+        """Width of right margin, border and padding."""
+        return self.padding_right + self.margin_right + self.border_right_width
+
     # Corners positions
 
     def content_box_x(self):

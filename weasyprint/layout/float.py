@@ -7,6 +7,7 @@
 """
 
 from ..formatting_structure import boxes
+from . import LayoutProgress
 from .min_max import handle_min_max_width
 from .percent import resolve_percentages, resolve_position_percentages
 from .preferred import shrink_to_fit
@@ -22,14 +23,14 @@ def float_width(box, context, containing_block):
         box.width = shrink_to_fit(context, box, containing_block.width)
 
 
-def float_layout(context, box, containing_block, absolute_boxes, fixed_boxes,
-                 max_position_y, skip_stack):
+def float_layout(context, containing_block, progress):
     """Set the width and position of floating ``box``."""
     from .block import block_container_layout
     from .flex import flex_layout
 
+    box = progress.box
     cb_width, cb_height = (containing_block.width, containing_block.height)
-    resolve_percentages(box, (cb_width, cb_height))
+    resolve_percentages(progress.box, (cb_width, cb_height))
 
     # TODO: This is only handled later in blocks.block_container_layout
     # http://www.w3.org/TR/CSS21/visudet.html#normal-block
@@ -37,7 +38,7 @@ def float_layout(context, box, containing_block, absolute_boxes, fixed_boxes,
         cb_height = (
             containing_block.position_y - containing_block.content_box_y())
 
-    resolve_position_percentages(box, (cb_width, cb_height))
+    resolve_position_percentages(progress.box, (cb_width, cb_height))
 
     if box.margin_left == 'auto':
         box.margin_left = 0
@@ -63,19 +64,11 @@ def float_layout(context, box, containing_block, absolute_boxes, fixed_boxes,
     if isinstance(box, boxes.BlockContainerBox):
         context.create_block_formatting_context()
         # TODO: handle out_of_flow_resume_at
-        progress = block_container_layout(
-            context, box, max_position_y=max_position_y,
-            skip_stack=skip_stack, page_is_empty=False,
-            absolute_boxes=absolute_boxes, fixed_boxes=fixed_boxes,
-            adjoining_margins=None, discard=False)
+        progress = block_container_layout(context, progress)
         context.finish_block_formatting_context(box)
         box, resume_at = progress.box, progress.resume_at
     elif isinstance(box, boxes.FlexContainerBox):
-        progress = flex_layout(
-            context, box, max_position_y=max_position_y,
-            skip_stack=skip_stack, containing_block=containing_block,
-            page_is_empty=False, absolute_boxes=absolute_boxes,
-            fixed_boxes=fixed_boxes)
+        progress = flex_layout(context, containing_block, progress)
         box, resume_at = progress.box, progress.resume_at
     else:
         assert isinstance(box, boxes.BlockReplacedBox)
@@ -85,7 +78,9 @@ def float_layout(context, box, containing_block, absolute_boxes, fixed_boxes,
 
     context.excluded_shapes.append(box)
 
-    return box, resume_at
+    return LayoutProgress(
+        box, resume_at, absolute_boxes=progress.absolute_boxes,
+        fixed_boxes=progress.fixed_boxes)
 
 
 def find_float_position(context, box, containing_block):

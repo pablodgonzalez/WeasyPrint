@@ -11,6 +11,7 @@ import copy
 from ..css import PageType, computed_from_cascaded
 from ..formatting_structure import boxes, build
 from ..logger import PROGRESS_LOGGER
+from . import LayoutProgress
 from .absolute import absolute_layout
 from .block import block_container_layout, block_level_layout
 from .min_max import handle_min_max_height, handle_min_max_width
@@ -434,10 +435,8 @@ def make_margin_boxes(context, page, state):
 
 def margin_box_content_layout(context, page, box):
     """Layout a margin box’s content once the box has dimensions."""
-    progress = block_container_layout(
-        context, box, max_position_y=float('inf'), skip_stack=None,
-        page_is_empty=True, absolute_boxes=[], fixed_boxes=[],
-        adjoining_margins=None, discard=False)
+    progress = LayoutProgress(box, page_is_empty=True)
+    progress = block_container_layout(context, progress)
     assert progress.resume_at is None
     assert progress.out_of_flow_resume_at is None
 
@@ -532,7 +531,6 @@ def make_page(context, root_box, page_type, resume_at, page_number,
     root_box.position_x = page.content_box_x()
     root_box.position_y = page.content_box_y()
     page_content_bottom = root_box.position_y + page.height
-    initial_containing_block = page
 
     if page_type.blank:
         root_box = root_box.copy_with_children([])
@@ -542,25 +540,22 @@ def make_page(context, root_box, page_type, resume_at, page_number,
     assert isinstance(root_box, (boxes.BlockBox, boxes.FlexContainerBox))
     context.create_block_formatting_context()
     context.current_page = page_number
-    page_is_empty = True
-    adjoining_margins = []
-    positioned_boxes = []  # Mixed absolute and fixed
-    progress = block_level_layout(
-        context, root_box, page_content_bottom, resume_at,
-        initial_containing_block, page_is_empty, positioned_boxes,
-        positioned_boxes, adjoining_margins, discard=False)
-    root_box = progress.box
-    # (root_box, resume_at)
-    assert root_box
+    positioned_boxes = []
+    progress = LayoutProgress(
+        root_box, resume_at, page_is_empty=True,
+        max_position_y=page_content_bottom, absolute_boxes=positioned_boxes,
+        fixed_boxes=positioned_boxes)
+    progress = block_level_layout(context, page, progress)
+    assert progress.box
 
     page.fixed_boxes = [
         placeholder._box for placeholder in positioned_boxes
         if placeholder._box.style['position'] == 'fixed']
     for absolute_box in positioned_boxes:
         absolute_layout(context, absolute_box, page, positioned_boxes)
-    context.finish_block_formatting_context(root_box)
+    context.finish_block_formatting_context(progress.box)
 
-    page.children = [root_box]
+    page.children = [progress.box]
     descendants = page.descendants()
 
     # Update page counter values

@@ -13,13 +13,14 @@ from .percent import resolve_one_percentage, resolve_percentages
 from .preferred import max_content_width, table_and_columns_preferred_widths
 
 
-def table_layout(context, table, max_position_y, skip_stack, containing_block,
-                 page_is_empty, absolute_boxes, fixed_boxes):
+def table_layout(context, containing_block, progress):
     """Layout for a table box."""
     from .block import (
         block_container_layout, block_level_page_break,
         find_earlier_page_break)
 
+    table = progress.box
+    skip_stack = progress.resume_at
     column_widths = table.column_widths
 
     if table.style['border_collapse'] == 'separate':
@@ -142,12 +143,10 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
                 # The computed height is a minimum
                 cell.computed_height = cell.height
                 cell.height = 'auto'
-                cell = block_container_layout(
-                    context, cell, max_position_y=float('inf'),
-                    skip_stack=None, page_is_empty=False,
-                    absolute_boxes=absolute_boxes,
-                    fixed_boxes=fixed_boxes, adjoining_margins=None,
-                    discard=False).box
+                cell_progress = LayoutProgress(
+                    cell, absolute_boxes=progress.absolute_boxes,
+                    fixed_boxes=progress.fixed_boxes)
+                cell = block_container_layout(context, cell_progress).box
                 cell.empty = not any(
                     child.is_floated() or child.is_in_normal_flow()
                     for child in cell.children)
@@ -235,7 +234,8 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
                     page_break = block_level_page_break(previous_row, row)
                     if page_break == 'avoid':
                         earlier_page_break = find_earlier_page_break(
-                            new_group_children, absolute_boxes, fixed_boxes)
+                            new_group_children, progress.absolute_boxes,
+                            progress.fixed_boxes)
                         if earlier_page_break:
                             new_group_children, resume_at = earlier_page_break
                             break
@@ -317,7 +317,8 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
                     page_break = block_level_page_break(previous_group, group)
                     if page_break == 'avoid':
                         earlier_page_break = find_earlier_page_break(
-                            new_table_children, absolute_boxes, fixed_boxes)
+                            new_table_children, progress.absolute_boxes,
+                            progress.fixed_boxes)
                         if earlier_page_break is not None:
                             new_table_children, resume_at = earlier_page_break
                             break
@@ -352,8 +353,8 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
         # are not rendered. If no row can be rendered because of the header and
         # the footer, the header and/or the footer are not rendered.
 
-        if page_is_empty:
-            header_footer_max_position_y = max_position_y
+        if progress.page_is_empty:
+            header_footer_max_position_y = progress.max_position_y
         else:
             header_footer_max_position_y = float('inf')
 
@@ -397,11 +398,11 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
             # Try with both the header and footer
             new_table_children, resume_at, next_page, end_position_y = (
                 body_groups_layout(
-                    skip_stack,
-                    position_y=position_y + header_height,
-                    max_position_y=max_position_y - footer_height,
+                    skip_stack, position_y=position_y + header_height,
+                    max_position_y=progress.max_position_y - footer_height,
                     page_is_empty=avoid_breaks))
-            if new_table_children or not table_rows or not page_is_empty:
+            if new_table_children or not table_rows or (
+                    not progress.page_is_empty):
                 footer.translate(dy=end_position_y - footer.position_y)
                 end_position_y += footer_height
                 return (
@@ -415,11 +416,11 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
             # Try with just the header
             new_table_children, resume_at, next_page, end_position_y = (
                 body_groups_layout(
-                    skip_stack,
-                    position_y=position_y + header_height,
-                    max_position_y=max_position_y,
+                    skip_stack, position_y=position_y + header_height,
+                    max_position_y=progress.max_position_y,
                     page_is_empty=avoid_breaks))
-            if new_table_children or not table_rows or not page_is_empty:
+            if new_table_children or not table_rows or (
+                    not progress.page_is_empty):
                 return (
                     header, new_table_children, footer, end_position_y,
                     resume_at, next_page)
@@ -433,9 +434,10 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
                 body_groups_layout(
                     skip_stack,
                     position_y=position_y,
-                    max_position_y=max_position_y - footer_height,
+                    max_position_y=progress.max_position_y - footer_height,
                     page_is_empty=avoid_breaks))
-            if new_table_children or not table_rows or not page_is_empty:
+            if new_table_children or not table_rows or (
+                    not progress.page_is_empty):
                 footer.translate(dy=end_position_y - footer.position_y)
                 end_position_y += footer_height
                 return (
@@ -448,7 +450,8 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
         assert not (header or footer)
         new_table_children, resume_at, next_page, end_position_y = (
             body_groups_layout(
-                skip_stack, position_y, max_position_y, page_is_empty))
+                skip_stack, position_y, progress.max_position_y,
+                progress.page_is_empty))
         return (
             header, new_table_children, footer, end_position_y, resume_at,
             next_page)
@@ -469,12 +472,10 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
 
     if new_table_children is None:
         assert resume_at is None
-        table = None
-        adjoining_margins = []
-        collapsing_through = False
         return LayoutProgress(
-            table, resume_at, out_of_flow_resume_at, next_page,
-            adjoining_margins, collapsing_through)
+            None, resume_at, out_of_flow_resume_at, next_page,
+            absolute_boxes=progress.absolute_boxes,
+            fixed_boxes=progress.fixed_boxes)
 
     table = table.copy_with_children(
         ([header] if header is not None else []) +
@@ -519,15 +520,14 @@ def table_layout(context, table, max_position_y, skip_stack, containing_block,
         group.width = last.position_x + last.width - first.position_x
         group.height = columns_height
 
-    if resume_at and not page_is_empty and (
+    if resume_at and not progress.page_is_empty and (
             table.style['break_inside'] in ('avoid', 'avoid-page')):
         table = None
         resume_at = None
-    adjoining_margins = []
-    collapsing_through = False
     return LayoutProgress(
-        table, resume_at, out_of_flow_resume_at, next_page, adjoining_margins,
-        collapsing_through)
+        table, resume_at, out_of_flow_resume_at, next_page,
+        absolute_boxes=progress.absolute_boxes,
+        fixed_boxes=progress.fixed_boxes)
 
 
 def add_top_padding(box, extra_padding):

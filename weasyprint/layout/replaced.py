@@ -268,7 +268,7 @@ def min_max_auto_replaced(box):
         box.height = min_height
 
 
-def block_replaced_box_layout(context, box, containing_block):
+def block_replaced_box_layout(context, containing_block, box):
     """Lay out the block :class:`boxes.ReplacedBox` ``box``."""
     from .block import block_level_width
     from .float import avoid_collisions
